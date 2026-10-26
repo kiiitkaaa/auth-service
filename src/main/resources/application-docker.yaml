@@ -1,0 +1,5 @@
+spring:
+  datasource:
+    url: jdbc:postgresql://auth-db:5432/${DOCKER_DB_NAME}
+    username: ${DOCKER_DB_USERNAME}
+    password: ${DOCKER_DB_PASSWORD}
