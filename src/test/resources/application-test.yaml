@@ -1,0 +1,9 @@
+jwt:
+  secret: test-secret-test-secret-test-secret-123
+  access-ttl: PT15M
+  refresh-ttl: P7D
+
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
