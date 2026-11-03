@@ -18,6 +18,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import java.time.Instant;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicLong;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.assertj.core.api.Assertions.*;
@@ -45,7 +46,7 @@ class AuthIntegrationTest {
     }
 
     @Test
-    void saveCredentials_storesBcryptHash_andRoleUser() throws Exception {
+    void saveCredentials_storesBcryptHash_emailAndRoleUser() throws Exception {
         long userId = nextUserId();
         String login = nextLogin("alice");
 
@@ -53,11 +54,23 @@ class AuthIntegrationTest {
 
         UserCredentials saved = repo.findByLogin(login).orElseThrow();
         assertThat(saved.getUserId()).isEqualTo(userId);
+        assertThat(saved.getEmail()).isEqualTo(login + "@example.com");
         assertThat(saved.getRole()).isEqualTo(Role.USER);
         assertThat(saved.getPasswordHash())
                 .isNotEqualTo("password123")
                 .startsWith("$2")
                 .hasSize(60);
+    }
+
+    @Test
+    void saveCredentials_storesEmailLowerCased() throws Exception {
+        String login = nextLogin("mail");
+
+        register(nextUserId(), login, "Mail.User@Example.COM", "password123")
+                .andExpect(status().isCreated());
+
+        assertThat(repo.findByLogin(login).orElseThrow().getEmail())
+                .isEqualTo("mail.user@example.com");
     }
 
     @Test
@@ -80,8 +93,9 @@ class AuthIntegrationTest {
         mvc.perform(post("/api/v1/auth/credentials")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                                {"userId": %d, "login": "%s", "password": "password123", "role": "ADMIN"}
-                                """.formatted(nextUserId(), login)))
+                                {"userId": %d, "login": "%s", "email": "%s@example.com",
+                                 "password": "password123", "role": "ADMIN"}
+                                """.formatted(nextUserId(), login, login)))
                 .andExpect(status().isCreated());
 
         assertThat(repo.findByLogin(login).orElseThrow().getRole()).isEqualTo(Role.USER);
@@ -90,9 +104,10 @@ class AuthIntegrationTest {
     @Test
     void saveCredentials_duplicateLogin_returns409() throws Exception {
         String login = nextLogin("dup");
-        register(nextUserId(), login, "password123").andExpect(status().isCreated());
-
-        register(nextUserId(), login, "password123").andExpect(status().isConflict());
+        register(nextUserId(), login, login + "-1@example.com", "password123")
+                .andExpect(status().isCreated());
+        register(nextUserId(), login, login + "-2@example.com", "password123")
+                .andExpect(status().isConflict());
     }
 
     @Test
@@ -103,17 +118,40 @@ class AuthIntegrationTest {
         register(userId, nextLogin("two"), "password123").andExpect(status().isConflict());
     }
 
+    @Test
+    void saveCredentials_duplicateEmail_returns409_caseInsensitive() throws Exception {
+        String email = nextLogin("same") + "@example.com";
+        register(nextUserId(), nextLogin("a"), email, "password123")
+                .andExpect(status().isCreated());
+        register(nextUserId(), nextLogin("b"), email.toUpperCase(Locale.ROOT), "password123")
+                .andExpect(status().isConflict());
+    }
+
     @ParameterizedTest
     @CsvSource({
-            "ab,password123",
-            "validlogin,short"
+            "ab,ab@example.com,password123",
+            "validlogin,valid@example.com,short",
+            "validlogin,not-an-email,password123",
+            "validlogin,a@,password123",
+            "validlogin,'',password123"
     })
-    void saveCredentials_invalidBody_returns400(String login, String password) throws Exception {
-        register(nextUserId(), login, password).andExpect(status().isBadRequest());
+    void saveCredentials_invalidBody_returns400(String login, String email, String password)
+            throws Exception {
+        register(nextUserId(), login, email, password).andExpect(status().isBadRequest());
     }
 
     @Test
-    void login_returnsTokens_withUserIdAndRole() throws Exception {
+    void saveCredentials_missingEmail_returns400() throws Exception {
+        mvc.perform(post("/api/v1/auth/credentials")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"userId": %d, "login": "%s", "password": "password123"}
+                                """.formatted(nextUserId(), nextLogin("noemail"))))
+                .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void login_returnsTokens_withUserIdRoleAndEmail() throws Exception {
         long userId = nextUserId();
         String login = nextLogin("bob");
         register(userId, login, "password123").andExpect(status().isCreated());
@@ -127,12 +165,14 @@ class AuthIntegrationTest {
         Jwt access = jwtDecoder.decode(JsonPath.read(body, "$.accessToken"));
         assertThat(access.getSubject()).isEqualTo(String.valueOf(userId));
         assertThat(access.getClaimAsString("role")).isEqualTo("USER");
+        assertThat(access.getClaimAsString("email")).isEqualTo(login + "@example.com");
         assertThat(access.getClaimAsString("type")).isEqualTo("access");
         assertThat(access.getExpiresAt()).isAfter(Instant.now());
 
         Jwt refresh = jwtDecoder.decode(JsonPath.read(body, "$.refreshToken"));
         assertThat(refresh.getSubject()).isEqualTo(String.valueOf(userId));
         assertThat(refresh.getClaimAsString("type")).isEqualTo("refresh");
+        assertThat(refresh.getClaimAsString("email")).isNull(); // email только в access-токене
         assertThat(refresh.getExpiresAt()).isAfter(access.getExpiresAt());
     }
 
@@ -140,6 +180,7 @@ class AuthIntegrationTest {
     void login_wrongPassword_returns401() throws Exception {
         String login = nextLogin("carol");
         register(nextUserId(), login, "password123").andExpect(status().isCreated());
+
         login(login, "wrong-password").andExpect(status().isUnauthorized());
     }
 
@@ -158,6 +199,19 @@ class AuthIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.accessToken").isNotEmpty())
                 .andExpect(jsonPath("$.refreshToken").isNotEmpty());
+    }
+
+    @Test
+    void refresh_newAccessTokenStillContainsEmail() throws Exception {
+        String login = nextLogin("kate");
+        register(nextUserId(), login, "password123").andExpect(status().isCreated());
+        String refresh = tokens(login, "password123").refresh();
+
+        String body = refreshRequest(refresh).andExpect(status().isOk())
+                .andReturn().getResponse().getContentAsString();
+
+        Jwt access = jwtDecoder.decode(JsonPath.read(body, "$.accessToken"));
+        assertThat(access.getClaimAsString("email")).isEqualTo(login + "@example.com");
     }
 
     @Test
@@ -180,7 +234,7 @@ class AuthIntegrationTest {
     }
 
     @Test
-    void validate_validToken_returnsUserIdAndRole() throws Exception {
+    void validate_validToken_returnsUserIdRoleAndEmail() throws Exception {
         long userId = nextUserId();
         String login = nextLogin("heidi");
         register(userId, login, "password123").andExpect(status().isCreated());
@@ -190,7 +244,8 @@ class AuthIntegrationTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.valid").value(true))
                 .andExpect(jsonPath("$.userId").value(userId))
-                .andExpect(jsonPath("$.role").value("USER"));
+                .andExpect(jsonPath("$.role").value("USER"))
+                .andExpect(jsonPath("$.email").value(login + "@example.com"));
     }
 
     @Test
@@ -228,7 +283,8 @@ class AuthIntegrationTest {
         validateRequest(newAccess)
                 .andExpect(jsonPath("$.valid").value(true))
                 .andExpect(jsonPath("$.userId").value(userId))
-                .andExpect(jsonPath("$.role").value("USER"));
+                .andExpect(jsonPath("$.role").value("USER"))
+                .andExpect(jsonPath("$.email").value(login + "@example.com"));
     }
 
     private record Tokens(String access, String refresh) {}
@@ -241,11 +297,16 @@ class AuthIntegrationTest {
     }
 
     private ResultActions register(long userId, String login, String password) throws Exception {
+        return register(userId, login, login + "@example.com", password);
+    }
+
+    private ResultActions register(long userId, String login, String email, String password)
+            throws Exception {
         return mvc.perform(post("/api/v1/auth/credentials")
                 .contentType(MediaType.APPLICATION_JSON)
                 .content("""
-                        {"userId": %d, "login": "%s", "password": "%s"}
-                        """.formatted(userId, login, password)));
+                        {"userId": %d, "login": "%s", "email": "%s", "password": "%s"}
+                        """.formatted(userId, login, email, password)));
     }
 
     private ResultActions login(String login, String password) throws Exception {

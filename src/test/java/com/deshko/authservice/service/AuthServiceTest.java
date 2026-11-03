@@ -41,8 +41,8 @@ class AuthServiceTest {
         when(repo.existsByLogin("alice")).thenReturn(false);
         when(repo.existsByUserId(10L)).thenReturn(false);
 
-        authService.saveCredentials(new SaveCredentialsRequest(10L, "alice",
-                "password123"));
+        authService.saveCredentials(new SaveCredentialsRequest(
+                10L, "alice", "alice@example.com", "password123"));
 
         ArgumentCaptor<UserCredentials> captor = ArgumentCaptor.forClass(UserCredentials.class);
         verify(repo).save(captor.capture());
@@ -50,6 +50,7 @@ class AuthServiceTest {
 
         assertThat(saved.getUserId()).isEqualTo(10L);
         assertThat(saved.getLogin()).isEqualTo("alice");
+        assertThat(saved.getEmail()).isEqualTo("alice@example.com");
         assertThat(saved.getRole()).isEqualTo(Role.USER);
         assertThat(saved.getPasswordHash())
                 .isNotEqualTo("password123")
@@ -60,10 +61,10 @@ class AuthServiceTest {
 
     @Test
     void saveCredentials_samePasswordGivesDifferentHashes() {
-        authService.saveCredentials(new SaveCredentialsRequest(1L, "user1",
-                "password123"));
-        authService.saveCredentials(new SaveCredentialsRequest(2L, "user2",
-                "password123"));
+        authService.saveCredentials(new SaveCredentialsRequest(
+                1L, "user1", "user1@example.com", "password123"));
+        authService.saveCredentials(new SaveCredentialsRequest(
+                2L, "user2", "user2@example.com", "password123"));
 
         ArgumentCaptor<UserCredentials> captor = ArgumentCaptor.forClass(UserCredentials.class);
         verify(repo, times(2)).save(captor.capture());
@@ -73,12 +74,31 @@ class AuthServiceTest {
     }
 
     @Test
+    void saveCredentials_emailIsNormalizedToLowerCase() {
+        authService.saveCredentials(new SaveCredentialsRequest(
+                10L, "alice", "  Alice@Example.COM ", "password123"));
+
+        ArgumentCaptor<UserCredentials> captor = ArgumentCaptor.forClass(UserCredentials.class);
+        verify(repo).save(captor.capture());
+        assertThat(captor.getValue().getEmail()).isEqualTo("alice@example.com");
+    }
+
+    @Test
+    void saveCredentials_duplicateEmailIsCheckedInNormalizedForm() {
+        when(repo.existsByEmail("alice@example.com")).thenReturn(true);
+
+        assertThatThrownBy(() -> authService.saveCredentials(new SaveCredentialsRequest(
+                10L, "alice", "ALICE@example.com", "password123")))
+                .isInstanceOf(CredentialsAlreadyExistException.class);
+        verify(repo, never()).save(any());
+    }
+
+    @Test
     void saveCredentials_duplicateLogin_throws() {
         when(repo.existsByLogin("alice")).thenReturn(true);
 
-        assertThatThrownBy(() ->
-                authService.saveCredentials(new SaveCredentialsRequest(10L,
-                        "alice", "password123")))
+        assertThatThrownBy(() -> authService.saveCredentials(new SaveCredentialsRequest(
+                10L, "alice", "alice@example.com", "password123")))
                 .isInstanceOf(CredentialsAlreadyExistException.class);
 
         verify(repo, never()).save(any());
@@ -89,10 +109,11 @@ class AuthServiceTest {
         when(repo.existsByLogin("bob")).thenReturn(false);
         when(repo.existsByUserId(10L)).thenReturn(true);
 
-        assertThatThrownBy(() ->
-                authService.saveCredentials(new SaveCredentialsRequest(10L,
-                        "bob", "password123")))
+        assertThatThrownBy(() -> authService.saveCredentials(new SaveCredentialsRequest(
+                10L, "bob", "bob@example.com", "password123")))
                 .isInstanceOf(CredentialsAlreadyExistException.class);
+
+        verify(repo, never()).save(any());
     }
 
     @Test
@@ -110,9 +131,8 @@ class AuthServiceTest {
 
     @Test
     void login_wrongPassword_throwsBadCredentials() {
-        when(repo.findByLogin("alice"))
-                .thenReturn(Optional.of(credentials(10L, "alice",
-                        "password123", Role.USER)));
+        when(repo.findByLogin("alice")).thenReturn(Optional.of(
+                credentials(10L, "alice", "password123", Role.USER)));
 
         assertThatThrownBy(() -> authService.login(new LoginRequest("alice", "wrong")))
                 .isInstanceOf(BadCredentialsException.class);
@@ -125,6 +145,7 @@ class AuthServiceTest {
 
         assertThatThrownBy(() -> authService.login(new LoginRequest("ghost", "password123")))
                 .isInstanceOf(BadCredentialsException.class);
+        verifyNoInteractions(jwtService);
     }
 
     @Test
@@ -156,17 +177,30 @@ class AuthServiceTest {
 
         assertThatThrownBy(() -> authService.refresh(new RefreshRequest("garbage")))
                 .isInstanceOf(JwtException.class);
+        verifyNoInteractions(repo);
     }
 
     @Test
-    void validate_validToken_returnsUserIdAndRole() {
-        when(jwtDecoder.decode("t")).thenReturn(jwt("10", "access", "ADMIN"));
+    void refresh_unknownUser_throws() {
+        when(jwtDecoder.decode("refresh")).thenReturn(jwt("10", "refresh"));
+        when(repo.findByUserId(10L)).thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> authService.refresh(new RefreshRequest("refresh")))
+                .isInstanceOf(BadCredentialsException.class);
+        verifyNoInteractions(jwtService);
+    }
+
+    @Test
+    void validate_validToken_returnsUserIdRoleAndEmail() {
+        when(jwtDecoder.decode("t")).thenReturn(jwt(
+                "10", "access", "ADMIN", "admin@example.com"));
 
         ValidateResponse r = authService.validate(new ValidateRequest("t"));
 
         assertThat(r.valid()).isTrue();
         assertThat(r.userId()).isEqualTo(10L);
         assertThat(r.role()).isEqualTo("ADMIN");
+        assertThat(r.email()).isEqualTo("admin@example.com");
     }
 
     @Test
@@ -178,27 +212,31 @@ class AuthServiceTest {
         assertThat(r.valid()).isFalse();
         assertThat(r.userId()).isNull();
         assertThat(r.role()).isNull();
+        assertThat(r.email()).isNull();
     }
 
-    private UserCredentials credentials(Long userId, String login, String rawPassword, Role role) {
+    private UserCredentials credentials(Long userId, String login,
+                                        String rawPassword, Role role) {
         UserCredentials c = new UserCredentials();
         c.setUserId(userId);
         c.setLogin(login);
+        c.setEmail(login + "@example.com");
         c.setPasswordHash(passwordEncoder.encode(rawPassword));
         c.setRole(role);
         return c;
     }
 
     private Jwt jwt(String subject, String type) {
-        return jwt(subject, type, "USER");
+        return jwt(subject, type, "USER", "user@example.com");
     }
 
-    private Jwt jwt(String subject, String type, String role) {
+    private Jwt jwt(String subject, String type, String role, String email) {
         return Jwt.withTokenValue("token")
                 .header("alg", "HS256")
                 .subject(subject)
                 .claim("type", type)
                 .claim("role", role)
+                .claim("email", email)
                 .build();
     }
 }
