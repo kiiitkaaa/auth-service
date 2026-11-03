@@ -29,7 +29,7 @@
     <properties>
         <java.version>25</java.version>
         <sonar.organization>kiiitkaaa</sonar.organization>
-        <sonar.projectKey>kiiitkaaa_user-service</sonar.projectKey>
+        <sonar.projectKey>kiiitkaaa_auth-service</sonar.projectKey>
         <sonar.host.url>https://sonarcloud.io</sonar.host.url>
     </properties>
     <dependencies>
@@ -106,6 +106,10 @@
             <groupId>org.projectlombok</groupId>
             <artifactId>lombok</artifactId>
             <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-oauth2-jose</artifactId>
         </dependency>
     </dependencies>
 
