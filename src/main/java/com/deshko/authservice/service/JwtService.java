@@ -34,15 +34,17 @@ class JwtService {
 
     private String build(UserCredentials c, String type, Duration ttl) {
         Instant now = Instant.now();
-        JwtClaimsSet claims = JwtClaimsSet.builder()
+        JwtClaimsSet.Builder claims = JwtClaimsSet.builder()
                 .subject(String.valueOf(c.getUserId()))
                 .id(UUID.randomUUID().toString())
                 .issuedAt(now)
                 .expiresAt(now.plus(ttl))
                 .claim("role", c.getRole().name())
-                .claim("type", type)
-                .build();
+                .claim("type", type);
+        if ("access".equals(type)) {
+            claims.claim("email", c.getEmail());
+        }
         JwsHeader header = JwsHeader.with(MacAlgorithm.HS256).build();
-        return encoder.encode(JwtEncoderParameters.from(header, claims)).getTokenValue();
+        return encoder.encode(JwtEncoderParameters.from(header, claims.build())).getTokenValue();
     }
 }

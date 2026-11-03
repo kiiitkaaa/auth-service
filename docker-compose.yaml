@@ -11,7 +11,7 @@ services:
     volumes:
       - auth-db-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${DOCKER_DB_USERNAME} -d $${DOCKER_DB_NAME}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DOCKER_DB_USERNAME} -d ${DOCKER_DB_NAME}"]
       interval: 5s
       timeout: 3s
       retries: 10

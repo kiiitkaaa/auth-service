@@ -12,7 +12,6 @@ import java.util.stream.Collectors;
 
 @RestControllerAdvice
 class GlobalExceptionHandler {
-
     @ExceptionHandler({BadCredentialsException.class, JwtException.class})
     ResponseEntity<ErrorResponse> handleUnauthorized(RuntimeException e) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)

@@ -13,6 +13,7 @@ import org.springframework.security.oauth2.jwt.JwtDecoder;
 import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import java.util.Locale;
 
 @Service
 @RequiredArgsConstructor
@@ -24,12 +25,15 @@ public class AuthService {
 
     @Transactional
     public void saveCredentials(SaveCredentialsRequest req) {
-        if (repo.existsByLogin(req.login()) || repo.existsByUserId(req.userId())) {
+        String email = req.email().trim().toLowerCase(Locale.ROOT);
+        if (repo.existsByLogin(req.login()) || repo.existsByUserId(req.userId())
+                || repo.existsByEmail(email)) {
             throw new CredentialsAlreadyExistException("Credentials already exist");
         }
         UserCredentials c = new UserCredentials();
         c.setUserId(req.userId());
         c.setLogin(req.login());
+        c.setEmail(email);
         c.setPasswordHash(passwordEncoder.encode(req.password()));
         c.setRole(Role.USER);
         repo.save(c);
@@ -58,9 +62,9 @@ public class AuthService {
         try {
             Jwt token = jwtDecoder.decode(req.token());
             return new ValidateResponse(true, Long.valueOf(token.getSubject()),
-                    token.getClaimAsString("role"));
+                    token.getClaimAsString("role"), token.getClaimAsString("email"));
         } catch (JwtException e) {
-            return new ValidateResponse(false, null, null);
+            return new ValidateResponse(false, null, null, null);
         }
     }
 
